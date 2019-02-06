@@ -493,7 +493,7 @@ public:
 
 	void								pipelineImageBarrier			(VkPipelineStageFlags srcStageMask, VkPipelineStageFlags dstStageMask, VkAccessFlags srcAccessMask, VkAccessFlags dstAccessMask, VkImageLayout oldLayout, VkImageLayout newLayout) const;
 	de::MovePtr<TextureLevelPyramid>	readImage						(VkImageAspectFlags aspectMask, deUint32 baseLayer) const;
-	tcu::TestStatus						verifyResultImage				(const std::string& successMessage, const UVec4& clearCoords = UVec4()) const;
+	tcu::TestStatus						verifyResultImage				(const std::string& successMessage, const UVec4& clearCoords = UVec4(), bool expectClear = true) const;
 
 protected:
 	enum ViewType
@@ -1019,7 +1019,7 @@ de::MovePtr<TextureLevelPyramid> ImageClearingTestInstance::readImage (VkImageAs
 	return result;
 }
 
-tcu::TestStatus ImageClearingTestInstance::verifyResultImage (const std::string& successMessage, const UVec4& clearCoords) const
+tcu::TestStatus ImageClearingTestInstance::verifyResultImage (const std::string& successMessage, const UVec4& clearCoords, bool expectClear) const
 {
 	DE_ASSERT((clearCoords == UVec4()) || m_params.imageExtent.depth == 1u);
 
@@ -1036,7 +1036,7 @@ tcu::TestStatus ImageClearingTestInstance::verifyResultImage (const std::string&
 			for (deUint32 y = 0; y < m_params.imageExtent.height; ++y)
 			for (deUint32 x = 0; x < m_params.imageExtent.width; ++x)
 			{
-				if (isInClearRange(clearCoords, x, y, arrayLayer, m_params.imageViewLayerRange, m_params.clearLayerRange))
+				if (expectClear && isInClearRange(clearCoords, x, y, arrayLayer, m_params.imageViewLayerRange, m_params.clearLayerRange))
 					depthValue = m_params.clearValue[0].depthStencil.depth;
 				else
 				if (isInInitialClearRange(m_isAttachmentFormat, 0u /* mipLevel */, arrayLayer, m_params.imageViewLayerRange))
@@ -1065,7 +1065,7 @@ tcu::TestStatus ImageClearingTestInstance::verifyResultImage (const std::string&
 			for (deUint32 y = 0; y < m_params.imageExtent.height; ++y)
 			for (deUint32 x = 0; x < m_params.imageExtent.width; ++x)
 			{
-				if (isInClearRange(clearCoords, x, y, arrayLayer, m_params.imageViewLayerRange, m_params.clearLayerRange))
+				if (expectClear && isInClearRange(clearCoords, x, y, arrayLayer, m_params.imageViewLayerRange, m_params.clearLayerRange))
 					stencilValue = m_params.clearValue[0].depthStencil.stencil;
 				else
 				if (isInInitialClearRange(m_isAttachmentFormat, 0u /* mipLevel */, arrayLayer, m_params.imageViewLayerRange))
@@ -1098,7 +1098,7 @@ tcu::TestStatus ImageClearingTestInstance::verifyResultImage (const std::string&
 				for (deUint32 y = 0; y < extent.height; ++y)
 				for (deUint32 x = 0; x < extent.width;  ++x)
 				{
-					if (isInClearRange(clearCoords, x, y, arrayLayer, m_params.imageViewLayerRange, m_params.clearLayerRange))
+					if (expectClear && isInClearRange(clearCoords, x, y, arrayLayer, m_params.imageViewLayerRange, m_params.clearLayerRange))
 						pColorValue = &m_params.clearValue[clearColorNdx].color;
 					else
 					{
@@ -1277,9 +1277,10 @@ public:
 		PARTIAL_CLEAR,
 	};
 
-	ClearAttachmentTestInstance (Context& context, const TestParams& testParams, const ClearType clearType = FULL_CLEAR)
+	ClearAttachmentTestInstance (Context& context, const TestParams& testParams, const ClearType clearType = FULL_CLEAR, const deUint32 attachmentIdx = 0u)
 		: ImageClearingTestInstance	(context, testParams)
 		, m_clearType				(clearType)
+		, m_attachmentIdx			(attachmentIdx)
 	{
 		if (!m_isAttachmentFormat)
 			TCU_THROW(NotSupportedError, "Format not renderable");
@@ -1290,7 +1291,7 @@ public:
 		const VkClearAttachment clearAttachment =
 		{
 			m_imageAspectFlags,					// VkImageAspectFlags	aspectMask;
-			0u,									// deUint32				colorAttachment;
+			m_attachmentIdx,					// deUint32				colorAttachment;
 			m_params.clearValue[0]				// VkClearValue			clearValue;
 		};
 
@@ -1372,17 +1373,28 @@ public:
 		endCommandBuffer();
 		submitCommandBuffer();
 
-		return verifyResultImage("cmdClearAttachments passed", clearCoords);
+		return verifyResultImage("cmdClearAttachments passed", clearCoords, m_attachmentIdx != VK_ATTACHMENT_UNUSED);
 	}
 
 private:
 	const ClearType	m_clearType;
+	const deUint32	m_attachmentIdx;
 };
 
 class PartialClearAttachmentTestInstance : public ClearAttachmentTestInstance
 {
 public:
 	PartialClearAttachmentTestInstance (Context& context, const TestParams& testParams) : ClearAttachmentTestInstance (context, testParams, PARTIAL_CLEAR) {}
+};
+
+class ClearUnusedAttachmentTestInstance : public ClearAttachmentTestInstance {
+public:
+	ClearUnusedAttachmentTestInstance (Context& context, const TestParams& testParams) : ClearAttachmentTestInstance (context, testParams, FULL_CLEAR, VK_ATTACHMENT_UNUSED) {}
+};
+
+class PartialClearUnusedAttachmentTestInstance : public ClearAttachmentTestInstance {
+public:
+	PartialClearUnusedAttachmentTestInstance (Context& context, const TestParams& testParams) : ClearAttachmentTestInstance (context, testParams, PARTIAL_CLEAR, VK_ATTACHMENT_UNUSED) {}
 };
 
 VkClearValue makeClearColorValue (VkFormat format, float r, float g, float b, float a)
@@ -1457,6 +1469,8 @@ TestCaseGroup* createImageClearingTestsCommon (TestContext& testCtx, tcu::TestCa
 	de::MovePtr<TestCaseGroup>	depthStencilAttachmentClearTests		(new TestCaseGroup(testCtx, "clear_depth_stencil_attachment", "Color Depth/Stencil Attachment Tests"));
 	de::MovePtr<TestCaseGroup>	partialColorAttachmentClearTests		(new TestCaseGroup(testCtx, "partial_clear_color_attachment", "Clear Partial Color Attachment Tests"));
 	de::MovePtr<TestCaseGroup>	partialDepthStencilAttachmentClearTests	(new TestCaseGroup(testCtx, "partial_clear_depth_stencil_attachment", "Clear Partial Depth/Stencil Attachment Tests"));
+	de::MovePtr<TestCaseGroup>	unusedColorAttachmentClearTests			(new TestCaseGroup(testCtx, "clear_unused_color_attachment", "Clear Unused Color Attachment Tests"));
+	de::MovePtr<TestCaseGroup>	partialUnusedColorAttachmentClearTests	(new TestCaseGroup(testCtx, "partial_clear_unused_color_attachment", "Clear Partial Unused Color Attachment Tests"));
 
 	// Some formats are commented out due to the tcu::TextureFormat does not support them yet.
 	const VkFormat		colorImageFormatsToTest[]	=
@@ -1923,6 +1937,48 @@ TestCaseGroup* createImageClearingTestsCommon (TestContext& testCtx, tcu::TestCa
 		}
 		imageClearingTests->addChild(depthStencilAttachmentClearTests.release());
 		imageClearingTests->addChild(partialDepthStencilAttachmentClearTests.release());
+	}
+
+	// Clear unused color attachment
+	{
+		for (size_t imageLayerParamsIndex = 0; imageLayerParamsIndex < numOfAttachmentLayerParamsToTest; ++imageLayerParamsIndex)
+		{
+			if (!imageLayerParamsToTest[imageLayerParamsIndex].twoStep)
+			{
+				de::MovePtr<TestCaseGroup> unusedColorAttachmentClearLayersGroup(new TestCaseGroup(testCtx, imageLayerParamsToTest[imageLayerParamsIndex].testName, ""));
+				de::MovePtr<TestCaseGroup> partialUnusedColorAttachmentClearLayersGroup(new TestCaseGroup(testCtx, imageLayerParamsToTest[imageLayerParamsIndex].testName, ""));
+
+				{
+					const VkFormat		format			= VK_FORMAT_R8G8B8A8_UNORM;
+					const std::string	testCaseName	= getFormatCaseName(format);
+					const TestParams	testParams		=
+							{
+									true,															// bool				useSingleMipLevel;
+									VK_IMAGE_TYPE_2D,												// VkImageType		imageType;
+									VK_FORMAT_R8G8B8A8_UNORM,										// VkFormat			format;
+									VK_IMAGE_TILING_OPTIMAL,										// VkImageTiling	tiling;
+									{ 256, 256, 1 },												// VkExtent3D		extent;
+									imageLayerParamsToTest[imageLayerParamsIndex].imageLayerCount,	// deUint32         imageLayerCount;
+									imageLayerParamsToTest[imageLayerParamsIndex].imageViewRange,	// LayerRange		imageViewLayerRange;
+									makeClearColorValue(format, 0.2f, 0.1f, 0.7f, 0.8f),			// VkClearValue		initValue
+									{
+											makeClearColorValue(format, 0.1f, 0.5f, 0.3f, 0.9f),			// VkClearValue		clearValue[0];
+											makeClearColorValue(format, 0.3f, 0.6f, 0.2f, 0.7f),			// VkClearValue		clearValue[1];
+									},
+									imageLayerParamsToTest[imageLayerParamsIndex].clearLayerRange,	// LayerRange       clearLayerRange;
+									allocationKind,													// AllocationKind	allocationKind;
+									imageLayerParamsToTest[imageLayerParamsIndex].isCube			// bool				isCube;
+							};
+					unusedColorAttachmentClearLayersGroup->addChild(new InstanceFactory1<ClearUnusedAttachmentTestInstance, TestParams>(testCtx, NODETYPE_SELF_VALIDATE, testCaseName, "Clear Unused Color Attachment", testParams));
+					partialUnusedColorAttachmentClearLayersGroup->addChild(new InstanceFactory1<PartialClearUnusedAttachmentTestInstance, TestParams>(testCtx, NODETYPE_SELF_VALIDATE, testCaseName, "Partial Clear Unused Color Attachment", testParams));
+				}
+
+				unusedColorAttachmentClearTests->addChild(unusedColorAttachmentClearLayersGroup.release());
+				partialUnusedColorAttachmentClearTests->addChild(partialUnusedColorAttachmentClearLayersGroup.release());
+			}
+		}
+		imageClearingTests->addChild(unusedColorAttachmentClearTests.release());
+		imageClearingTests->addChild(partialUnusedColorAttachmentClearTests.release());
 	}
 
 	return imageClearingTests;
