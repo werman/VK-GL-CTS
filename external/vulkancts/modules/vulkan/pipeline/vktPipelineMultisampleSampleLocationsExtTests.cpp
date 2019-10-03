@@ -1353,15 +1353,20 @@ void addProgramsVerifyLocationGeometry (SourceCollections& programCollection, co
 		std::ostringstream src;
 		src << glu::getGLSLVersionDeclaration(glu::GLSL_VERSION_450) << "\n"
 			<< "\n"
+			<< "#extension GL_ARB_shader_draw_parameters : require\n"
+			<< "\n"
 			<< "layout(location = 0) in vec4 in_position;\n"
 			<< "\n"
 			<< "out gl_PerVertex {\n"
 			<< "    vec4 gl_Position;\n"
 			<< "};\n"
 			<< "\n"
+			<< "layout(location = 0) flat out int out_primitiveOffset;\n"
+			<< "\n"
 			<< "void main(void)\n"
 			<< "{\n"
 			<< "    gl_Position = in_position;\n"
+			<< "    out_primitiveOffset = gl_BaseVertexARB / 3;\n"
 			<< "}\n";
 
 		programCollection.glslSources.add("vert") << glu::VertexSource(src.str());
@@ -1376,12 +1381,14 @@ void addProgramsVerifyLocationGeometry (SourceCollections& programCollection, co
 			<< "\n"
 			<< declareSampleDataSSBO()
 			<< "\n"
+			<< "layout(location = 0) flat in int in_primitiveOffset;"
+			<< "\n"
 			<< "void main(void)\n"
 			<< "{\n"
 			<< "    uvec2 fragCoord = uvec2(gl_FragCoord.xy);\n"
 			<< "    uint  index     = (fragCoord.y * sb_data.renderSize.x + fragCoord.x) * sb_data.samplesPerPixel + gl_SampleID;\n"
 			<< "\n"
-			<< "    if (gl_PrimitiveID == index)\n"
+			<< "    if ((in_primitiveOffset + gl_PrimitiveID) == index)\n"
 			<< "        o_color = vec4(0.0, 1.0, 0.0, 1.0);\n"
 			<< "    else\n"
 			<< "        o_color = vec4(1.0, 0.0, 0.0, 1.0);\n"
@@ -1590,22 +1597,20 @@ protected:
 
 		rt.bake(vk, device, m_renderSize);
 
-		Move<VkPipeline> pipeline;
+		Move<VkPipeline> pipelineStatic = makeGraphicsPipelineSinglePassColor(
+				vk, device, std::vector<VkDynamicState>(), *pipelineLayout, rt.getRenderPass(), *vertexModule, *fragmentModule, viewport, scissor,
+				m_params.numSamples, /*use sample locations*/ true, sampleLocationsInfo, vertexInputConfig, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
+
+		Move<VkPipeline> pipelineDynamic;
 
 		if (useDynamicStateSampleLocations)
 		{
 			std::vector<VkDynamicState>	dynamicState;
 			dynamicState.push_back(VK_DYNAMIC_STATE_SAMPLE_LOCATIONS_EXT);
 
-			pipeline = makeGraphicsPipelineSinglePassColor(
+			pipelineDynamic = makeGraphicsPipelineSinglePassColor(
 				vk, device, dynamicState, *pipelineLayout, rt.getRenderPass(), *vertexModule, *fragmentModule, viewport, scissor,
 				m_params.numSamples, /*use sample locations*/ true, makeEmptySampleLocationsInfo(), vertexInputConfig, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
-		}
-		else
-		{
-			pipeline = makeGraphicsPipelineSinglePassColor(
-				vk, device, std::vector<VkDynamicState>(), *pipelineLayout, rt.getRenderPass(), *vertexModule, *fragmentModule, viewport, scissor,
-				m_params.numSamples, /*use sample locations*/ true, sampleLocationsInfo, vertexInputConfig, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
 		}
 
 		const Unique<VkCommandPool>		cmdPool		(createCommandPool(vk, device, VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT, m_context.getUniversalQueueFamilyIndex()));
@@ -1616,7 +1621,6 @@ protected:
 		rt.recordBeginRenderPass(vk, *cmdBuffer, renderArea, VK_SUBPASS_CONTENTS_INLINE);
 
 		vk.cmdBindVertexBuffers(*cmdBuffer, /*first binding*/ 0u, /*num bindings*/ 1u, &m_vertexBuffer.get(), /*offsets*/ &ZERO);
-		vk.cmdBindPipeline(*cmdBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, *pipeline);
 
 		if (useDynamicStateSampleLocations)
 			vk.cmdSetSampleLocationsEXT(*cmdBuffer, &sampleLocationsInfo);
@@ -1624,7 +1628,27 @@ protected:
 		if (m_descriptorSet)
 			vk.cmdBindDescriptorSets(*cmdBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, *pipelineLayout, 0u, 1u, &m_descriptorSet.get(), 0u, DE_NULL);
 
-		vk.cmdDraw(*cmdBuffer, m_numVertices, 1u, 0u, 0u);
+		if (!useDynamicStateSampleLocations) {
+			for (deUint32 i = 0; i < m_numVertices / 3; i++) {
+				vk.cmdBindPipeline(*cmdBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, *pipelineStatic);
+				vk.cmdDraw(*cmdBuffer, 3u, 1u, i * 3u, 0u);
+			}
+		} else {
+			for (deUint32 i = 0; i < m_numVertices / 3; i++) {
+				if (i % 3 == 0) {
+					vk.cmdSetSampleLocationsEXT(*cmdBuffer, &sampleLocationsInfo);
+				}
+
+				if (i % 3 != 2) {
+					vk.cmdBindPipeline(*cmdBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, *pipelineDynamic);
+				} else {
+					vk.cmdBindPipeline(*cmdBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, *pipelineStatic);
+				}
+
+				vk.cmdDraw(*cmdBuffer, 3u, 1u, i * 3u, 0u);
+			}
+		}
+
 		endRenderPass(vk, *cmdBuffer);
 
 		// Resolve image -> host buffer
