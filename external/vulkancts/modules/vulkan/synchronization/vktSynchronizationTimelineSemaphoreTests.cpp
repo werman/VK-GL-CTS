@@ -188,6 +188,24 @@ public:
 			timelineValues.push_back(rng.getInt(1, 10000));
 		}
 
+		{
+			const VkSemaphoreWaitInfo		waitInfo	=
+			{
+				VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO,									// VkStructureType			sType;
+				DE_NULL,																// const void*				pNext;
+				m_waitAll ? 0u : (VkSemaphoreWaitFlags) VK_SEMAPHORE_WAIT_ANY_BIT_KHR,	// VkSemaphoreWaitFlagsKHR	flags;
+				(deUint32) semaphores.size(),											// deUint32					semaphoreCount;
+				&semaphores[0],															// const VkSemaphore*		pSemaphores;
+				&timelineValues[0],														// const deUint64*			pValues;
+			};
+			VkResult						result;
+
+			result = vk.waitSemaphores(device, &waitInfo, 10000000ull); // Wait for 10 ms
+
+			if (result == VK_SUCCESS)
+				return tcu::TestStatus::fail("Wait failed");
+		}
+
 		if (m_waitAll)
 		{
 
